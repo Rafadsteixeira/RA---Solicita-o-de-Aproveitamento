@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+portal_config.json
+Base_Equivalencias_Senac.xlsx
+Base_Alunos.xlsx
+*.tmp.xlsx
+tempCodeRunnerFile.py
