@@ -310,23 +310,65 @@ class ExcelStorage:
         cpf = re.sub(r"\D", "", str(record.get("cpf", "") or ""))
         return student_id, cpf
 
-    def _upsert_student(self, wb, record: dict[str, str], process_id: str = ""):
-        """Atualiza a ficha do aluno e registra o processo que a utiliza."""
+    def _resolve_student_identity(self, ws, mapping, record: dict[str, str]) -> tuple[int | None, str]:
+        """Localiza uma única ficha sem permitir que ID e CPF apontem para pessoas diferentes."""
         student_id, cpf = self._student_identity(record)
-        if not student_id and not cpf:
-            return
-
-        ws = wb[STUDENT_SHEET]
-        mapping = self._header_map(ws, STUDENT_COLUMNS)
         id_col = mapping.get("id_aluno")
         cpf_col = mapping.get("cpf")
-        row_idx = None
+        identities = {}
         for candidate in range(2, ws.max_row + 1):
             saved_id = str(ws.cell(candidate, id_col).value or "").strip().casefold() if id_col else ""
             saved_cpf = re.sub(r"\D", "", str(ws.cell(candidate, cpf_col).value or "")) if cpf_col else ""
-            if (student_id and saved_id == student_id) or (cpf and saved_cpf == cpf):
-                row_idx = candidate
-                break
+            identities[candidate] = (saved_id, saved_cpf)
+        id_rows = {row for row, (saved_id, _) in identities.items() if student_id and saved_id == student_id}
+        cpf_rows = {row for row, (_, saved_cpf) in identities.items() if cpf and saved_cpf == cpf}
+        matched_rows = id_rows | cpf_rows
+        if len(id_rows) > 1 or len(cpf_rows) > 1:
+            lines = ", ".join(str(row) for row in sorted(matched_rows))
+            raise ExcelStorageError(
+                f"A base de alunos contém ID ou CPF duplicado nas linhas {lines}. "
+                "Revise esses cadastros antes de salvar."
+            )
+        if len(matched_rows) > 1:
+            raise ExcelStorageError(
+                f"Conflito: o ID '{str(record.get('id_aluno', '') or '').strip()}' "
+                "e o CPF informado pertencem a alunos diferentes. Revise o ID e o CPF."
+            )
+        row_idx = next(iter(matched_rows), None)
+        if row_idx is None:
+            return None, str(record.get("id_aluno", "") or "").strip()
+        saved_id, saved_cpf = identities[row_idx]
+        if cpf and saved_cpf and cpf != saved_cpf:
+            raise ExcelStorageError(
+                f"Conflito: o ID '{str(record.get('id_aluno', '') or '').strip()}' "
+                f"já está cadastrado com outro CPF (linha {row_idx} da base de alunos). "
+                "Revise o ID e o CPF."
+            )
+        canonical_rows = [
+            row for row, (other_id, other_cpf) in identities.items()
+            if (saved_id and other_id == saved_id) or (saved_cpf and other_cpf == saved_cpf)
+        ]
+        if len(canonical_rows) > 1:
+            lines = ", ".join(str(row) for row in canonical_rows)
+            raise ExcelStorageError(
+                f"A base de alunos contém o mesmo ID ou CPF nas linhas {lines}. "
+                "Revise esses cadastros antes de salvar."
+            )
+        canonical_id = str(ws.cell(row_idx, id_col).value or "").strip() if id_col else ""
+        return row_idx, canonical_id or str(record.get("id_aluno", "") or "").strip()
+
+    def _upsert_student(
+        self, wb, record: dict[str, str], process_id: str = "", *, new_student_id: str = ""
+    ) -> str:
+        """Atualiza a ficha, preserva seu ID e retorna o ID usado no vínculo."""
+        student_id, cpf = self._student_identity(record)
+        if not student_id and not cpf and not new_student_id:
+            return ""
+
+        ws = wb[STUDENT_SHEET]
+        mapping = self._header_map(ws, STUDENT_COLUMNS)
+        row_idx, canonical_id = self._resolve_student_identity(ws, mapping, record)
+        canonical_id = canonical_id or new_student_id or f"ALU-{self._next_student_number(wb):06d}"
         if row_idx is None:
             row_idx = ws.max_row + 1
 
@@ -334,8 +376,9 @@ class ExcelStorage:
         for _heading, field in STUDENT_COLUMNS:
             current = ws.cell(row_idx, mapping[field]).value if mapping.get(field) else None
             values[field] = "" if current is None else str(current)
+        values["id_aluno"] = canonical_id
         for field in (
-            "id_aluno", "nome_aluno", "cpf", "rg", "data_nascimento", "data_matricula",
+            "nome_aluno", "cpf", "rg", "data_nascimento", "data_matricula",
             "telefone", "email", "curso_origem", "ano_cursado",
         ):
             value = str(record.get(field, "") or "").strip()
@@ -363,6 +406,7 @@ class ExcelStorage:
             cell.value = str(values.get(field, "") or "")
             cell.data_type = "s"
             cell.number_format = "@"
+        return canonical_id
 
     @staticmethod
     def _next_student_number(wb) -> int:
@@ -382,38 +426,38 @@ class ExcelStorage:
         return f"ALU-{self._next_student_number(self._open()):06d}"
 
     def save_students(self, records: list[dict[str, str]]) -> list[str]:
-        """Grava um ou vários pré-cadastros em uma única atualização da planilha."""
-        wb = self._open()
-        ws = wb[STUDENT_SHEET]
-        mapping = self._header_map(ws, STUDENT_COLUMNS)
-        id_col = mapping.get("id_aluno")
-        cpf_col = mapping.get("cpf")
-        next_number = self._next_student_number(wb)
-        saved_ids = []
-        for source in records:
-            record = dict(source)
-            if not str(record.get("nome_aluno", "") or "").strip():
-                continue
-            student_id = str(record.get("id_aluno", "") or "").strip()
-            cpf = re.sub(r"\D", "", str(record.get("cpf", "") or ""))
-            if not student_id and cpf:
-                for row_idx in range(2, ws.max_row + 1):
-                    saved_cpf = re.sub(r"\D", "", str(ws.cell(row_idx, cpf_col).value or "")) if cpf_col else ""
-                    if saved_cpf == cpf:
-                        student_id = str(ws.cell(row_idx, id_col).value or "").strip() if id_col else ""
-                        break
-            if not student_id:
-                student_id = f"ALU-{next_number:06d}"
-                next_number += 1
-            else:
-                generated = re.fullmatch(r"ALU-(\d+)", student_id, re.IGNORECASE)
-                if generated:
-                    next_number = max(next_number, int(generated.group(1)) + 1)
-            record["id_aluno"] = student_id
-            self._upsert_student(wb, record)
-            saved_ids.append(student_id)
-        if not saved_ids:
+        """Valida o lote inteiro e grava os alunos em uma única atualização da planilha."""
+        records = [dict(record) for record in records if str(record.get("nome_aluno", "") or "").strip()]
+        if not records:
             raise ExcelStorageError("Não encontrei alunos com nome para salvar.")
+        cpfs_by_id = {}
+        for record in records:
+            student_id, cpf = self._student_identity(record)
+            if student_id and cpf:
+                if student_id in cpfs_by_id and cpfs_by_id[student_id] != cpf:
+                    raise ExcelStorageError(
+                        f"Conflito: o ID '{str(record.get('id_aluno', '') or '').strip()}' "
+                        "aparece com CPFs diferentes no mesmo lote. Revise os dados de origem."
+                    )
+                cpfs_by_id[student_id] = cpf
+
+        wb = self._open()
+        next_number = self._next_student_number(wb)
+        # Reserve IDs supplied in the file before allocating automatic IDs.
+        for record in records:
+            generated = re.fullmatch(r"ALU-(\d+)", str(record.get("id_aluno", "") or "").strip(), re.IGNORECASE)
+            if generated:
+                next_number = max(next_number, int(generated.group(1)) + 1)
+        saved_ids = []
+        saved_keys = set()
+        for record in records:
+            new_student_id = f"ALU-{next_number:06d}"
+            student_id = self._upsert_student(wb, record, new_student_id=new_student_id)
+            if student_id == new_student_id:
+                next_number += 1
+            if student_id.casefold() not in saved_keys:
+                saved_ids.append(student_id)
+                saved_keys.add(student_id.casefold())
         self._safe_save(wb, self.path)
         return saved_ids
 
@@ -727,10 +771,21 @@ class StudentStorage(ExcelStorage):
         self._ensure_sheet(wb, STUDENT_SHEET, STUDENT_COLUMNS, Font, PatternFill, Alignment)
         return wb
 
-    def save_process_student(self, record: dict[str, str], process_id: str):
+    def resolve_student_id(self, record: dict[str, str]) -> str:
+        """Valida a identidade e devolve o ID canônico sem gravar a base de alunos."""
         wb = self._open()
-        self._upsert_student(wb, record, process_id=process_id)
+        ws = wb[STUDENT_SHEET]
+        mapping = self._header_map(ws, STUDENT_COLUMNS)
+        _row_idx, student_id = self._resolve_student_identity(ws, mapping, record)
+        if not student_id and self._student_identity(record)[1]:
+            student_id = f"ALU-{self._next_student_number(wb):06d}"
+        return student_id
+
+    def save_process_student(self, record: dict[str, str], process_id: str) -> str:
+        wb = self._open()
+        student_id = self._upsert_student(wb, record, process_id=process_id)
         self._safe_save(wb, self.path)
+        return student_id
 
     def remove_process_link(self, student_id: str, process_id: str):
         wb = self._open()

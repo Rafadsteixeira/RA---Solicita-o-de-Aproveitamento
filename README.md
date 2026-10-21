@@ -57,6 +57,8 @@ A planilha principal armazena processos, equivalências e usuários. A base sepa
 
 Na tela **Cadastro de Alunos**, use **Importar alunos (PDF)** e selecione o relatório. O sistema reconhece o layout tabular do Senac (**Relatório de Dados e Status do Aluno**) e procura ID, nome, RG, CPF, data de nascimento e data de matrícula em cada linha de aluno, mesmo quando há colunas vazias. Os registros encontrados são gravados na base separada de alunos como pré-cadastros. Na tela **Solicitar Aproveitamento**, selecione o aluno pré-cadastrado; ao salvar o processo, o sistema registra o vínculo pelo ID do processo. O conteúdo é lido localmente. PDFs protegidos por senha diferente de vazia ou sem texto selecionável não são importados.
 
+Reimportações com o mesmo CPF atualizam a ficha e preservam o ID já cadastrado e os vínculos com processos. Se o ID e o CPF apontarem para alunos diferentes, se um ID aparecer com CPFs diferentes ou se houver cadastros duplicados para os identificadores envolvidos, o sistema cancela o lote inteiro e informa o conflito. Corrija os dados indicados antes de tentar novamente. A mensagem de sucesso conta cada aluno atualizado uma única vez.
+
 ## Arquivos
 
 - `guia_uso.html`: guia passo a passo, disponível para abrir no navegador sem internet.

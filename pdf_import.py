@@ -287,19 +287,20 @@ def extract_students_data(pdf_path: str | Path) -> list[dict[str, str]]:
             "O PDF foi lido, mas não encontrei os rótulos de ID, nome, RG, CPF ou datas."
         )
 
-    # A multi-page report can repeat one student's details; merge those pages,
-    # while keeping separate IDs/CPFs as separate pre-registrations.
-    merged: dict[str, dict[str, str]] = {}
+    # Merge repeated pages only when both identifiers agree. Keep different
+    # pairs visible so storage can detect conflicts before committing the batch.
+    merged: dict[tuple[str, ...], dict[str, str]] = {}
     for index, record in enumerate(records):
         cpf = re.sub(r"\D", "", record.get("cpf", ""))
         student_id = record.get("id_aluno", "").strip().casefold()
         name = _normalize(record.get("nome_aluno", ""))
         birth_date = _normalize(record.get("data_nascimento", ""))
-        identity = cpf or student_id
-        if not identity and name and birth_date:
-            identity = f"{name}|{birth_date}"
-        if not identity:
-            identity = f"record-{index}"
+        if student_id or cpf:
+            identity = ("documentos", student_id, cpf)
+        elif name and birth_date:
+            identity = ("nome_nascimento", name, birth_date)
+        else:
+            identity = ("registro", str(index))
         current = merged.setdefault(identity, {})
         for field, value in record.items():
             if value and not current.get(field):

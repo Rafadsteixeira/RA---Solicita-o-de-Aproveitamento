@@ -968,7 +968,11 @@ class PortalApp:
                 raise PDFStudentImportError("Não encontrei nenhum nome de aluno para criar pré-cadastros.")
             student_ids = self.student_storage.save_students(students)
         except (PDFStudentImportError, ExcelStorageError) as exc:
-            messagebox.showerror("Importar alunos", str(exc), parent=self.root)
+            messagebox.showerror(
+                "Importar alunos",
+                f"{exc}\n\nNenhum pré-cadastro foi alterado nesta importação.",
+                parent=self.root,
+            )
             return
         self._refresh_student_list()
         self._refresh_student_process_selector()
@@ -1569,6 +1573,7 @@ class PortalApp:
             messagebox.showerror("Planilha", "Conecte uma planilha Excel em Configurações antes de salvar.", parent=self.root)
             return
         try:
+            record["id_aluno"] = self.student_storage.resolve_student_id(record)
             previous_process = (
                 self.storage.get_process(self.current_process_id)
                 if self.current_process_id else None
